@@ -1,9 +1,23 @@
 AMQP as Promised
 ================
 
+![Version](http://img.shields.io/npm/v/amqp-as-promised.svg) &nbsp;
+![License](http://img.shields.io/npm/l/amqp-as-promised.svg) &nbsp;
+![Monthly downloads](http://img.shields.io/npm/dm/amqp-as-promised.svg) &nbsp;
 ![Build Status](https://ci.tt.se/jenkins/buildStatus/icon?job=amqp-as-promised)
 
-Promise wrapper around [node-amqp](https://github.com/postwait/node-amqp).
+A high-level [promise-based](https://github.com/kriskowal/q) API built on
+[node-amqp](https://github.com/postwait/node-amqp), extended with
+functions for AMQP-based RPC.
+
+ * [Configuration](#configuration)
+ * [Examples](#examples)
+ * [API](#api)
+   * [The amqpc object](#the-amqpc-object)
+   * [The exchange object](#the-exchange-object)
+   * [The queue object](#the-queue-object)
+   * [RPC functions](#rpc-functions)
+ * [Changelog](CHANGELOG.md)
 
 ## Installing
 
@@ -14,7 +28,7 @@ Promise wrapper around [node-amqp](https://github.com/postwait/node-amqp).
     conf = require './myconf.json' # see example conf below
     amqpc = (require 'amqp-as-promised') conf.amqp
 
-## Config parameters
+## Configuration
 
 As of version 0.1.0, the following config parameters are accepted,
 although we also try to keep backwards compatibility with the older
@@ -41,6 +55,11 @@ If true, means there will be no AMQP connection. Default: false
 
 * `timeout`: timeout in ms for rpc calls. Default: 1000ms
 
+### `logLevel`
+
+* `logLevel`: sets the log level. Defaults to `INFO`. Possible levels
+  are `DEBUG`, `INFO`, `WARN`, `ERROR`
+
 ## Example config
 
     {
@@ -50,18 +69,33 @@ If true, means there will be no AMQP connection. Default: false
             "login": "test",
             "password": "supersecret"
         },
-		"local": false,
-		"rpc": {
-		    "timeout": 2000
-		}
+        "logLevel": "warn",
+        "local": false,
+        "rpc": {
+            "timeout": 2000
+        }
     }
+
+Or with url:
+
+    {
+        "connection": {
+            "url": "amqp://myuser:supersecret@192.168.0.10/test"
+        },
+        "logLevel": "warn"
+    }
+
+
+Examples
+==========
 
 ## Using `amqpc` to publish
 
     amqpc.exchange('myexchange').then (ex) ->
         msg = {}
         msg.domain = domain
-        ex.publish 'mytopic.foo', msg
+        ex.publish('mytopic.foo', msg).then ->
+			console.log 'published message!'
 
 ## Using `amqpc` to bind
 
@@ -135,28 +169,47 @@ error message.
     process.on 'SIGINT', graceful
     process.on 'SIGTERM', graceful
 
+API
+===
+
 ## The `amqpc` object
 
 ### `amqpc.exchange(name, opts)`
 
-A promise for an exchange. If `opts` is omitted declares an exchange in `passive` mode.
+A promise for an exchange. If `opts` is omitted, then `passive:true`
+is assumed.
 
 ### `amqpc.queue(qname, opts)`
 
 A promise for a queue. If `qname` is omitted, `""` is used. If opts is
-omitted a default `durable:true` and `autoDelete:(qname=='')`. See
-`queue.*` below.
+omitted, then `exclusive:true` is assumed if the name is empty, or
+`passive:true` if not.
 
-### `amqpc.bind(exname, qname, topic[, callback])`
+Thus, `amqpc.queue()` will create a new exclusive, anonymous, queue
+that is automatically deleted on disconnect, while
+`amqpc.queue('my-queue')` will try to passively declare the existing
+queue `my-queue`.
+
+See [`queue.*`](#the-queue-object) below.
+
+### `amqpc.bind(exchange, queue, topic[, callback])`
 
 Shorthand for
 
-1. Looking up exchange for `exname`. Note that `passive:true` so
-   exchange must be declared already.
-2. Looking up queue for `qname`. See `amqpc.queue` for queue default
-   opts.
-3. Binding queue to `topic`.
-4. Subscribing `callback` to queue (optional).
+1. If `exchange` is a string, then look up the existing exchange with
+   that name. 
+2. If `queue` is a string, then look up the existing queue with that name.
+3. Bind queue to `exchange/topic`.
+4. Subscribe `callback` to queue (optional).
+
+#### Parameters
+
+ * `exchange` - an exchange object or a string with the name of an
+   exchange
+ * `queue` - a queue object or a string with the name of a queue
+ * `topic` - a string with the topic name.
+ * `callback` - a function that takes the arguments `(msg, headers,
+   deliveryinfo)`.
 
 ### `amqpc.shutdown()`
 
@@ -167,9 +220,17 @@ shut down the socket connection.
 
 Read only property that tells whether `conf.local` was true.
 
-### `queue.bind(ex, topic)`
+## The `exchange` object
 
-Binds the queue to the given exchange (object, not name). Will unbind
+### `exchange.publish(routingKey, msg, options)`
+
+Publishes a message, returning a promise.
+
+## The `queue` object
+
+### `queue.bind(exchange, topic)`
+
+Binds the queue to the given exchange (object, or string). Will unbind
 if queue was already bound.
 
 ### `queue.unbind()`
@@ -193,3 +254,28 @@ rejects the previous message and will requeue it if `requeue` is true.
 ### `queue.name`
 
 Read only property with the queue name.
+
+## RPC functions
+
+### `amqpc.rpc(exchange, routingKey, msg, [headers], [options])`
+
+Perform an AMQP-based remote procedure call, and returns a promise for
+the return value:
+
+ 1. Creates an exlusive, anonymous, return queue if doesn't already
+    exist.
+ 2. Publishes an RPC-style message on the given `exchange`, with the
+    specified `routingkey`, `headers` and `options`. The `replyTo` and
+    `correlationId` headers are set automatically.
+ 3. Waits for a reply on the return queue, and resolves the promise
+    with the contents of the reply. If no reply is received before the
+    timeout, the promise is instead rejected.
+
+#### Parameters
+
+ * `exchange` - the name of an exchange, or an exchange object
+ * `routingkey`
+ * `headers` - AMQP headers to be sent with the message. See [exchange.publish()](#exchangepublishroutingkey-msg-options).
+ * `options` - valid options are:
+   + `timeout` - timeout in milliseconds. If none is specified, the
+     default value specified when creating the client is used.

@@ -1,54 +1,70 @@
-{EventEmitter}             = require 'events'
-proxyquire                 = require 'proxyquire'
-chai                       = require 'chai'
-expect                     = chai.expect
-should                     = chai.should()
-Q                          = require 'q'
-log                        = require 'bog'
-{ spy, stub, mock, match } = require 'sinon'
+{EventEmitter}  = require 'events'
+Q               = require 'q'
+QueueWrapper    = require '../src/queue-wrapper'
+ExchangeWrapper = require '../src/exchange-wrapper'
 
-chai.use(require 'chai-as-promised')
-
-log.level -1
-
-amqpClient = nodeAmqp = undefined
-
-describe 'QueueWrapper', ->
-
-    beforeEach ->
-        nodeAmqp = {}
-        amqpClient = proxyquire '../src/amqp-client', 
-            'node-amqp': nodeAmqp
-
-    describe '.subscribe()', ->
-
-        it 'should pass options to .subscribe() on to the wrapped queue', (done) ->
-            conn = {}
-            queue = {}
-            amqpc = amqpClient { local: true }            
-            queue.subscribe = stub().returns { addCallback: (fn) -> fn( { consumerTag: 'tag' }) }
-            wrapper = new amqpc._QueueWrapper conn, queue
-            wrapper.unsubscribe = stub().returns Q {}
-
-            wrapper.subscribe({panda: true}, ->).then ->
-                queue.subscribe.should.have.been.calledWith({panda: true}, match.func)
-                done()
-            .done()
-
+amqp = amqpc = amqpClient = nodeAmqp = undefined
+            
 describe 'AmqpClient', ->
 
     beforeEach ->
-        nodeAmqp = {}
+        amqp = new EventEmitter
+        queue = new EventEmitter
+        amqp.queue = (name, obts, cb) ->
+            cb queue
+            queue.emit 'open'
+        amqp.exchange = (name, opts, cb) -> cb {}
+        nodeAmqp = { createConnection: stub().returns amqp }
         amqpClient = proxyquire '../src/amqp-client', 
             'amqp': nodeAmqp
+        amqpc = amqpClient { connection: url: 'url' }
+        amqp.emit 'ready'
 
     describe 'conn', ->
-
         it 'should invoke amqp.createConnection with the connection parameters', ->
-            amqp = new EventEmitter
-            amqp.exchange = (name, opts, cb) -> cb {}
-            nodeAmqp.createConnection = stub().returns amqp
-            amqpc = amqpClient { connection: url: 'url' }
-            amqp.emit 'ready'
             amqpc.exchange('panda').then ->
                 nodeAmqp.createConnection.should.have.been.calledWith { url: 'url' }
+
+    describe '.queue()', ->
+        beforeEach ->
+            spy amqp, 'queue'
+
+        it 'should assume exclusive:true when called without name and opts', ->
+            amqpc.queue().then ->
+                amqp.queue.should.have.been.calledWith '', { exclusive: true }
+        it 'should assume passive:true when called with name but without opts', ->
+            amqpc.queue('panda').then ->
+                amqp.queue.should.have.been.calledWith 'panda', { passive:true }
+        it 'should pass given name and opts on when creating the queue', ->
+            amqpc.queue('panda', { my: 'option' }).then ->
+                amqp.queue.should.have.been.calledWith 'panda', { my: 'option' }
+        it 'should returns a promise for a QueueWrapper', ->
+            amqpc.queue().should.eventually.be.an.instanceof QueueWrapper
+        it 'should pass a reference to itself to QueueWrapper', ->
+            amqpc.queue().then (q) ->
+                q.amqpc.should.equal amqpc
+        it 'should return the same object if passed a QueueWrapper as only argument', ->
+            amqpc.queue('panda').then (q1) ->
+                amqpc.queue(q1).then (q2) ->
+                    expect(q1).to.equal q2
+
+    describe '.exchange()', ->
+        beforeEach ->
+            spy amqp, 'exchange'
+            
+        describe 'should set the confirm flag when creating an exchange', ->
+            it 'with explicit options', ->
+                amqpc.exchange('panda', { durable: true }).then ->
+                    amqp.exchange.should.have.been.calledWith 'panda', { durable: true, confirm: true }
+            it 'without explicit options', ->
+                amqpc.exchange('panda').then ->
+                    amqp.exchange.should.have.been.calledWith 'panda', { passive: true, confirm: true }
+
+        it 'should return an ExchangeWrapper', ->
+            amqpc.exchange('panda').should.eventually.be.an.instanceof ExchangeWrapper
+
+        it 'should return the same object if passed an ExchangeWrapper as only argument', ->
+            amqpc.exchange('panda').then (ex1) ->
+                amqpc.exchange(ex1).then (ex2) ->
+                    expect(ex1).to.equal ex2
+        

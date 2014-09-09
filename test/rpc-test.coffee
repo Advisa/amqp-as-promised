@@ -1,23 +1,16 @@
-chai   = require 'chai'
-Q      = require 'q'
-uuid   = require 'uuid'
-expect = chai.expect
-should = chai.should()
-
-chai.use(require 'sinon-chai')
-chai.use(require 'chai-as-promised')
-{ spy, stub, mock, match } = require 'sinon'
-
-Rpc = require '../src/rpc'
+Q    = require 'q'
+uuid = require 'uuid'
+Rpc  = require '../src/rpc'
 
 class Exchange
+    constructor: (@name) ->
     publish: ->
 
 class Queue
     subscribe: ->
 
 class Amqpc
-    exchange: -> Q new Exchange
+    _exchange: -> Q new Exchange
     queue: -> Q new Queue
 
 describe 'the Rpc constructor', ->
@@ -64,11 +57,12 @@ describe 'the subscription callback', ->
 
 describe 'Rpc.registerResponse()', ->
     rpc = new Rpc new Amqpc
+    def = undefined
+    beforeEach ->
+        def = rpc.registerResponse '1234'
 
     it 'should have a map of responses', ->
         rpc.should.have.property 'responses'
-
-    def = rpc.registerResponse '1234'
 
     it 'should return a deferred', ->
         expect(def).to.have.property 'resolve'
@@ -78,7 +72,6 @@ describe 'Rpc.registerResponse()', ->
 
 describe 'Rpc.resolveResponse()', ->
     rpc = new Rpc new Amqpc
-
     def = rpc.registerResponse '1234'
     rpc.resolveResponse '1234', 'hello, world', { header1: 'value1' }
 
@@ -95,8 +88,8 @@ describe 'Rpc response expiration', ->
     rpc = new Rpc new Amqpc, { timeout: 10 }
 
     it 'should reject the promise with a timeout error', ->
-        def = rpc.registerResponse '1234'
-        def.promise.should.eventually.be.rejectedWith 'timeout'
+        def = rpc.registerResponse '1234', { info: 'panda.cub' }
+        def.promise.should.eventually.be.rejectedWith 'timeout: panda.cub'
 
     it 'should handle empty expiration events gracefully', ->
         rpc.responses.emit 'expired', undefined
@@ -110,14 +103,14 @@ describe 'Rpc response expiration', ->
 describe 'Rpc.rpc() called with headers', ->
     exchange = new Exchange
     _publish = mock(exchange).expects('publish').withArgs 'world', 'msg',
-        match({ replyTo: 'q123', headers: { 'customHeader', 'header1' } }).and(match.has('correlationId'))
+        match({ replyTo: 'q123', headers: { 'customHeader', 'header1' } }).and(match.has('correlationId')).and(match(deliveryMode:1))
 
     queue = new Queue
     queue.name = 'q123'
 
     amqpc = new Amqpc
     mock(amqpc).expects('queue').returns Q queue
-    _exchange = mock(amqpc).expects('exchange').withArgs('hello').returns(Q exchange)
+    _exchange = mock(amqpc).expects('_exchange').withArgs('hello').returns(Q exchange)
 
     rpc = new Rpc amqpc
     promise = rpc.rpc('hello', 'world', 'msg', { 'customHeader', 'header1' })
@@ -145,7 +138,7 @@ describe 'Rpc.rpc() called without headers', ->
 
     amqpc =
         queue: -> Q queue
-        exchange: -> Q exchange
+        _exchange: -> Q exchange
 
     rpc = new Rpc amqpc
     promise = rpc.rpc('hello', 'world', 'msg')
@@ -159,19 +152,22 @@ describe 'Rpc.rpc() called without headers', ->
 describe 'Rpc.rpc() called without msg object', ->
     amqpc =
         queue: -> Q queue
-        exchange: -> Q exchange
+        _exchange: -> Q exchange
     rpc = new Rpc amqpc
 
     it 'should throw an error', ->
         expect(-> rpc.rpc('foo','bar')).to.throw 'Must provide msg'
 
 describe 'Rpc.rpc() called with a timeout option', ->
-    amqpc =
-        queue: -> Q { name: 'q123' }
-        exchange: -> Q new Exchange
-    rpc = new Rpc amqpc
-    rpc.responses = set:spy()
-    spy rpc, 'registerResponse'
+    amqpc = rpc = undefined
+    
+    beforeEach ->
+        amqpc =
+            queue: -> Q { name: 'q123' }
+            _exchange: (name) -> Q new Exchange name
+        rpc = new Rpc amqpc
+        rpc.responses = set:spy()
+        spy rpc, 'registerResponse'
 
     it 'should pass the timeout on to registerResponse()', (done) ->
         rpc.rpc('hello', 'world', 'msg', {}, { timeout: 23 })
@@ -180,14 +176,6 @@ describe 'Rpc.rpc() called with a timeout option', ->
                 {info: "hello/world",timeout: 23}
             done()
         , 10
-
-describe 'Rpc.rpc() called with an info option', (done) ->
-    amqpc =
-        queue: -> Q { name: 'q123' }
-        exchange: -> Q new Exchange
-    rpc = new Rpc amqpc
-    rpc.responses = set:spy()
-    spy rpc, 'registerResponse'
 
     it 'should pass the info to registerResponse()', (done) ->
         rpc.rpc('hello', 'world', 'msg', {}, { info:'my trace output' })

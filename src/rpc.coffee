@@ -8,7 +8,7 @@ module.exports = class Rpc
             timeout: options?.timeout || 1000
         @responses.on 'expired', (ev) ->
             if typeof ev?.value?.def.reject == 'function'
-                ev.value.def.reject new Error "timeout: #{ev.options?.info}"
+                ev.value.def.reject new Error "timeout: #{ev.value.options?.info}"
 
     returnChannel: =>
         if !@_returnChannel
@@ -31,17 +31,17 @@ module.exports = class Rpc
             @responses.get(corrId).def.resolve msg
             @responses.remove corrId
 
-    rpc: (exname, routingKey, msg, headers, options) =>
+    rpc: (exchange, routingKey, msg, headers, options) =>
         throw new Error 'Must provide msg' unless msg
         Q.all([
-            @amqpc.exchange(exname),
+            @amqpc._exchange(exchange)
             @returnChannel()
         ]).spread (ex, q) =>
             id = uuid.v4()
             options         = options || {}
-            options.info    = options.info || "#{exname}/#{routingKey}"
+            options.info    = options.info || "#{ex.name}/#{routingKey}"
             def = @registerResponse id, options
-            opts = { replyTo: q.name, correlationId: id }
+            opts = { deliveryMode: 1, replyTo: q.name, correlationId: id }
             opts.headers = headers if headers?
             ex.publish routingKey, msg, opts
             def.promise

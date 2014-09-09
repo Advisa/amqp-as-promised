@@ -1,84 +1,8 @@
-log  = require 'bog'
-Q    = require 'q'
-amqp = require 'amqp'
-
-# Queue wrapper that only exposes that which we want to exposes in a promise manner
-class QueueWrapper
-
-    constructor: (@conn, @queue) ->
-        @name = @queue.name
-
-    bind: (ex, topic) =>
-        throw new Error('Exchange is not an object') unless ex or typeof ex != 'object'
-        throw new Error('Topic is not a string') unless topic or typeof topic != 'string'
-        def = Q.defer()
-        @unbind().then =>
-            log.info 'binding:', ex.name, @name, topic
-            @queue.bind ex, topic
-            @queue.once 'queueBindOk', =>
-                @_ex = ex
-                @_topic = topic
-                log.info 'queue bound:', @name, @_topic
-                def.resolve this
-        .done()
-        def.promise
-
-    unbind: =>
-        def = Q.defer()
-        unless @_ex
-            def.resolve this
-            return def.promise
-        @conn.then (mq) =>
-            @queue.unbind @_ex, @_topic
-            @queue.once 'queueUnbindOk', =>
-                log.info 'queue unbound:', @name, @_topic
-                delete @_ex
-                delete @_topic
-                def.resolve this
-        .done()
-        def.promise
-
-    subscribe: (opts, callb) =>
-        def = Q.defer()
-        if typeof opts == 'function'
-            callb = opts
-            opts = null
-        opts = opts ? {ack: false, prefetchCount: 1}
-        throw new Error('Opts is not an object') unless opts or typeof opts != 'object'
-        throw new Error('Callback is not a function') unless callb or typeof callb != 'function'
-        @unsubscribe().then =>
-            wrapper = =>
-                try
-                    callb.apply null, arguments
-                catch err
-                    log.error err
-            (@queue.subscribe opts, wrapper).addCallback (ok) =>
-                ctag = ok.consumerTag
-                @_ctag = ctag
-                log.info 'subscribed:', @name, ctag
-                def.resolve this
-        .done()
-        def.promise
-
-    unsubscribe: =>
-        def = Q.defer()
-        unless @_ctag
-            def.resolve this
-            return def.promise
-        ctag = @_ctag
-        delete @_ctag
-        @queue.unsubscribe ctag
-        log.info 'unsubscribed:', @name, ctag
-        def.resolve this
-        def.promise
-
-    isDurable: => @queue.options.durable
-
-    isAutoDelete: => @queue.options.autoDelete
-
-    shift: =>
-        @queue.shift.apply @queue, arguments
-
+log             = require 'bog'
+Q               = require 'q'
+amqp            = require 'amqp'
+ExchangeWrapper = require './exchange-wrapper'
+QueueWrapper    = require './queue-wrapper'
 
 module.exports = (conf) ->
         
@@ -106,11 +30,12 @@ module.exports = (conf) ->
                 log.warn 'amqp connection failed:', err
             else if def.promise.isFulfilled()
                 unless isShutdown
-                    log.warn 'amqp connection failed:',
+                    log.warn 'amqp error:',
                         (if err.message then err.message else err)
         def.promise
 
     exchange = (name, opts) ->
+        return Q(name) if name instanceof ExchangeWrapper 
         throw new Error 'Unable connect exchange when local' if local
         throw new Error 'Unable connect exchange when shutdown' if isShutdown
         def = Q.defer()
@@ -120,34 +45,36 @@ module.exports = (conf) ->
             return (prom.then (ex) -> def.resolve ex) if prom
             mq._ttExchanges[name] = def.promise
             opts = opts ? {passive:true}
+            opts.confirm = true
             mq.exchange name, opts, (ex) ->
                 log.info 'exchange ready:', ex.name
-                def.resolve ex
+                def.resolve new ExchangeWrapper ex
         .done()
         def.promise
 
-    queue = (qname, opts) ->
+    queue = (qname, opts) =>
+        return Q(qname) if qname instanceof QueueWrapper 
         throw new Error 'Unable to connect queue when local' if local
         throw new Error 'Unable to connect queue shutdown' if isShutdown
         if qname != null and typeof qname == 'object'
             opts = qname
             qname = ''
         qname = '' if !qname
-        opts = opts ? { durable: true, exclusive: qname == '' }
+        opts = opts ? if qname == '' then { exclusive: true } else { passive: true }
         def = Q.defer()
-        conn.then (mq) ->
+        conn.then (mq) =>
             if qname != ''
                 prom = mq._ttQueues[qname]
                 return (prom.then (q) -> def.resolve q) if prom
                 mq._ttQueues[qname] = def.promise
-            mq.queue qname, opts, (queue) ->
+            mq.queue qname, opts, (queue) =>
                 log.info 'queue created:', queue.name
                 mq._ttQueues[queue.name] = def.promise if qname == ''
-                def.resolve new QueueWrapper(conn, queue)
+                def.resolve new QueueWrapper _self, queue
         .done()
         def.promise
 
-    bind = (exname, qname, topic, callback) ->
+    bind = (ex, q, topic, callback) ->
         throw new Error 'Unable to bind when local' if local
         throw new Error 'Unable to bind when shutdown' if isShutdown
         if typeof topic == 'function'
@@ -156,7 +83,7 @@ module.exports = (conf) ->
             qname = ''
         qname = '' if not qname
         def = Q.defer()
-        (Q.all [(exchange exname), (queue qname)]).spread (ex, q) ->
+        (Q.all [(exchange ex), (queue q)]).spread (ex, q) ->
             Q.fcall ->
                 q.bind ex, topic
             .then (q) ->
@@ -203,12 +130,10 @@ module.exports = (conf) ->
         .done()
         def.promise
 
-    {
+    return _self = {
         exchange: exchange
         queue: queue
         bind: bind
         shutdown: shutdown
         local: local
-        _QueueWrapper: QueueWrapper
     }
-
