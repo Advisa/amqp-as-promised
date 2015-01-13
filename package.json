@@ -1,12 +1,14 @@
 {
-  "name": "amqp-as-promised",
+  "name": "@advisa/amqp-as-promised",
   "description": "A promise-based AMQP API build on node-amqp",
   "version": "0.2.3",
   "repository": {
     "type": "git",
     "url": "https://github.com/ttab/amqp-as-promised"
   },
-  "private": true,
+  "publishConfig": {
+    "registry": "http://npm.advisa.internal:4873"
+  },
   "main": "lib/index",
   "scripts": {
     "test": "mocha",
