@@ -7,7 +7,7 @@
     "url": "https://github.com/ttab/amqp-as-promised"
   },
   "publishConfig": {
-    "registry": "http://npm.advisa.internal:4873"
+    "registry": "https://npm.advisa.se"
   },
   "main": "lib/index",
   "scripts": {
